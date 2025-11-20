@@ -19,7 +19,7 @@
 #define MAX_DESC 256
 #define MAX_SALAS 20
 #define MAX_OBJETOS 10
-#define SHM_KEY 12345 // Chave única para a memória partilhada
+#define SHM_KEY 6666 // Chave única
 
 // --- Estruturas ---
 
@@ -29,7 +29,6 @@ typedef struct {
 } Objeto;
 
 typedef struct {
-    // 0:Norte, 1:Sul, 2:Oeste, 3:Este, 4:Cima, 5:Baixo
     int direcoes[6]; 
     char descricao[MAX_DESC];
     int id_objeto;    // -1 se não houver
@@ -61,7 +60,8 @@ typedef struct {
     // Controlos de Estado
     int jogo_a_correr; 
     int em_combate;
-    char ultima_mensagem[200]; // Para feedback visual (ex: "Apanhaste a espada")
+    char ultima_mensagem[200]; 
+    char log_combate[1024];    
     
     // Sincronização
     sem_t mutex; 

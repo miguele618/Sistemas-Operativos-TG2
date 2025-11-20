@@ -1,6 +1,6 @@
 #include "jogo.h"
 
-// Variáveis globais para acesso no signal handler
+// Variáveis globais
 EstadoJogo *jogo = NULL;
 int shmid = 0;
 pid_t pid_monstro = 0, pid_jogador = 0;
@@ -14,6 +14,7 @@ void limpar_recursos() {
     }
     if (shmid > 0) {
         shmctl(shmid, IPC_RMID, NULL);
+        printf("\n[SISTEMA] Memoria partilhada limpa.\n");
     }
 }
 
@@ -60,7 +61,7 @@ void carregar_mapa(const char *ficheiro) {
             buffer[strcspn(buffer, "\n")] = 0;
             strcpy(jogo->salas[i].descricao, buffer);
         }
-        fgets(buffer, MAX_DESC, f); // Linha vazia
+        fgets(buffer, MAX_DESC, f); 
         i++;
     }
     jogo->num_salas = i;
@@ -93,17 +94,16 @@ void carregar_save() {
     }
 }
 
-// --- Processos ---
+// --- Processo: MONSTRO ---
 
 void processo_monstro() {
     srand(time(NULL) ^ getpid());
     
     while (jogo->jogo_a_correr) {
         int tempo = (rand() % 10) + 5; 
-        sleep(tempo); // Sleep FORA do semáforo (Correto)
+        sleep(tempo); 
 
         sem_wait(&jogo->mutex);
-        // Só move se não estiver em combate e estiver vivo
         if (!jogo->em_combate && jogo->jogo_a_correr && jogo->monstro.energia > 0) {
             int dir = rand() % 6;
             int prox = jogo->salas[jogo->monstro.local].direcoes[dir];
@@ -116,20 +116,31 @@ void processo_monstro() {
     exit(0);
 }
 
+// --- Processo: JOGADOR (Interface) ---
+
 void desenhar_interface() {
-    system("clear"); 
-    printf("==================================================\n");
-    printf("           JOGO DE AVENTURAS (IPBeja)\n");
+    // REMOVIDO: system("clear"); 
+    // Adicionado quebras de linha para separar visualmente os turnos
+    printf("\n\n"); 
     printf("==================================================\n");
     
+    // MODO COMBATE
+    if (jogo->em_combate) {
+        printf("       /!\\ RELATORIO DE COMBATE /!\\   \n");
+        printf("--------------------------------------------------\n");
+        printf("%s", jogo->log_combate);
+        printf("--------------------------------------------------\n");
+        return;
+    }
+
+    // MODO EXPLORAÇÃO
     Sala *s = &jogo->salas[jogo->jogador.local];
     printf("LOCAL: %s (Sala %d)\n", s->descricao, jogo->jogador.local);
     
-    // Debug para saberes onde o monstro anda
     if (jogo->monstro.energia > 0)
-        printf("[DEBUG] Monstro na sala: %d (HP: %d)\n", jogo->monstro.local, jogo->monstro.energia);
+        printf("[INFO] Monstro detetado na sala: %d (HP: %d)\n", jogo->monstro.local, jogo->monstro.energia);
     else
-        printf("[DEBUG] Monstro morto.\n");
+        printf("[INFO] O Monstro foi derrotado.\n");
 
     printf("--------------------------------------------------\n");
     
@@ -140,8 +151,9 @@ void desenhar_interface() {
         printf("\n*** O TESOURO ESTA AQUI! ***\n");
 
     printf("--------------------------------------------------\n");
-    printf("JOGADOR: Energia: %d/100\n", jogo->jogador.energia);
-    printf("MAO: %s\n", (jogo->jogador.id_objeto_mao == -1) ? "Vazia" : jogo->objetos[jogo->jogador.id_objeto_mao].nome);
+    printf("JOGADOR: Energia: %d/100 | MAO: %s\n", 
+           jogo->jogador.energia, 
+           (jogo->jogador.id_objeto_mao == -1) ? "Vazia" : jogo->objetos[jogo->jogador.id_objeto_mao].nome);
     printf("--------------------------------------------------\n");
     printf("MENSAGEM: %s\n", jogo->ultima_mensagem);
     printf("==================================================\n");
@@ -156,18 +168,16 @@ void processo_jogador() {
         sem_wait(&jogo->mutex);
         
         if (jogo->em_combate) {
-            system("clear");
-            printf("\n\n!!! COMBATE A DECORRER !!!\n");
-            printf("Aguarde o resultado...\n");
+            desenhar_interface();
             sem_post(&jogo->mutex);
-            sleep(1); // Espera passiva sem bloquear semáforo
+            sleep(2); // Espera um pouco para não spammar o log de combate muito rápido
             continue;
         }
         
         desenhar_interface();
         sem_post(&jogo->mutex);
 
-        // Input bloqueante (espera o utilizador escrever)
+        // Input do utilizador
         scanf("%s", cmd);
 
         sem_wait(&jogo->mutex);
@@ -196,7 +206,7 @@ void processo_jogador() {
             if (s->tem_tesouro == 1) {
                 jogo->jogador.tem_tesouro = 1;
                 s->tem_tesouro = 0;
-                strcpy(jogo->ultima_mensagem, "TESOURO APANHADO! Corre para a Sala 0!");
+                strcpy(jogo->ultima_mensagem, "TESOURO APANHADO! Foge para a Sala 0!");
             } else {
                 strcpy(jogo->ultima_mensagem, "Sem tesouro aqui.");
             }
@@ -222,11 +232,10 @@ void processo_jogador() {
 // --- Main (Motor de Jogo) ---
 
 int main(int argc, char *argv[]) {
-    // Garante que prints aparecem logo (fix para VSCode/GDB)
     setbuf(stdout, NULL); 
-
     signal(SIGINT, handle_sigint);
 
+    // 1. Memória Partilhada
     shmid = shmget(SHM_KEY, sizeof(EstadoJogo), IPC_CREAT | 0666);
     if (shmid < 0) { perror("Erro shmget"); exit(1); }
     
@@ -235,13 +244,15 @@ int main(int argc, char *argv[]) {
 
     sem_init(&jogo->mutex, 1, 1);
 
-    // Inicialização
+    // 2. Inicialização
     jogo->jogo_a_correr = 1;
     jogo->em_combate = 0;
     strcpy(jogo->ultima_mensagem, "Bem-vindo!");
+    strcpy(jogo->log_combate, "");
     carregar_objetos();
     carregar_mapa("mapa.txt");
 
+    // Valores Default
     jogo->jogador.energia = 100;
     jogo->jogador.local = 0;
     jogo->jogador.id_objeto_mao = -1;
@@ -258,13 +269,14 @@ int main(int argc, char *argv[]) {
         jogo->jogador.id_objeto_mao = atoi(argv[4]);
     }
 
+    // 3. Criar Processos
     pid_monstro = fork();
     if (pid_monstro == 0) processo_monstro();
 
     pid_jogador = fork();
     if (pid_jogador == 0) processo_jogador();
 
-    // Loop do Árbitro
+    // 4. Loop Principal
     while (jogo->jogo_a_correr) {
         sem_wait(&jogo->mutex);
         
@@ -272,52 +284,69 @@ int main(int argc, char *argv[]) {
         if (jogo->jogador.tem_tesouro == 1 && jogo->jogador.local == 0) {
             jogo->jogo_a_correr = 0;
             sem_post(&jogo->mutex);
-            printf("\n\n*** VITORIA! ***\n");
+            printf("\n\n*** PARABENS! VITORIA! ***\n");
             break;
         }
 
-        // Verifica Combate (Só se monstro estiver vivo e na mesma sala)
+        // Combate
         if (jogo->jogador.local == jogo->monstro.local && jogo->monstro.energia > 0) {
             jogo->em_combate = 1;
             
-            // Lógica de Combate
-            int dano_jog = 5;
-            if (jogo->jogador.id_objeto_mao != -1) 
-                dano_jog += jogo->objetos[jogo->jogador.id_objeto_mao].eficacia;
+            // Cálculos
+            int dano_base = 5;
+            int dano_arma = 0;
+            char nome_arma[50] = "Punhos";
             
-            int dano_mon = (rand() % 15) + 5;
+            if (jogo->jogador.id_objeto_mao != -1) {
+                dano_arma = jogo->objetos[jogo->jogador.id_objeto_mao].eficacia;
+                strcpy(nome_arma, jogo->objetos[jogo->jogador.id_objeto_mao].nome);
+            }
+            int total_dano_jog = dano_base + dano_arma;
+            int dano_monstro = (rand() % 15) + 5; 
             
-            jogo->monstro.energia -= dano_jog;
-            jogo->jogador.energia -= dano_mon;
+            int hp_mon_antes = jogo->monstro.energia;
+            int hp_jog_antes = jogo->jogador.energia;
             
-            sprintf(jogo->ultima_mensagem, "COMBATE! Deste %d. Recebeste %d.", dano_jog, dano_mon);
+            jogo->monstro.energia -= total_dano_jog;
+            jogo->jogador.energia -= dano_monstro;
             
-            // Verifica Morte do Monstro
+            // Log Detalhado
+            sprintf(jogo->log_combate, 
+                "JOGADOR ATACA:\n"
+                " > Base (5) + %s (%d) = %d Dano\n"
+                " > Monstro HP: %d -> %d\n\n"
+                "MONSTRO ATACA:\n"
+                " > Ataque Furioso (Random 5-20): %d Dano\n"
+                " > Jogador HP: %d -> %d\n",
+                nome_arma, dano_arma, total_dano_jog,
+                hp_mon_antes, jogo->monstro.energia,
+                dano_monstro,
+                hp_jog_antes, jogo->jogador.energia
+            );
+
             if (jogo->monstro.energia <= 0) {
-                strcat(jogo->ultima_mensagem, " MONSTRO DERROTADO!");
-                // FIX: Move o monstro para longe para evitar loop infinito
+                strcat(jogo->log_combate, "\n>>> O MONSTRO FOI DERROTADO! <<<");
                 jogo->monstro.local = -1; 
-                jogo->em_combate = 0;
             }
             
-            // Verifica Morte do Jogador
             if (jogo->jogador.energia <= 0) {
                 jogo->jogo_a_correr = 0;
-                printf("\n\nGAME OVER...\n");
+                strcat(jogo->log_combate, "\n>>> MORRESTE... <<<");
             }
             
             sem_post(&jogo->mutex);
-            sleep(2); // Sleep FORA do semáforo para dar tempo de ler
+            sleep(2); // Pausa para dar ritmo ao combate
             
-            // Limpa flag de combate se ainda estiver a correr
             sem_wait(&jogo->mutex);
-            jogo->em_combate = 0;
+            if (jogo->monstro.energia <= 0) jogo->em_combate = 0;
             sem_post(&jogo->mutex);
+            
         } else {
+            if (jogo->em_combate == 1) jogo->em_combate = 0;
             sem_post(&jogo->mutex);
         }
         
-        usleep(200000); // 0.2s delay para não gastar 100% CPU
+        usleep(200000);
     }
 
     kill(pid_monstro, SIGKILL);
